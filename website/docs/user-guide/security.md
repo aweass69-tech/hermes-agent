@@ -56,7 +56,7 @@ The full set of keys:
 | Mode | Behavior |
 |------|----------|
 | **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
-| **manual** | Always prompt the user for approval on dangerous commands. |
+| **manual** | Always prompt the user for approval on dangerous commands. A direct `terminal` call with no CLI, gateway, or ask surface, and that is not a cron job, `hermes chat -q`, or an unattended platform, cannot prompt: a command the dangerous-pattern list flags is blocked before it runs. `security.allow_lazy_installs` does not affect this. Cron, `-q`, and webhook/api_server sessions still follow `approvals.cron_mode`, `single_query_mode`, and `unattended_mode`. |
 | **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts, and write calls on `trust: untrusted` MCP servers run without the trust prompt. An MCP server's declared spend limit still asks (see [YOLO mode](#yolo-mode)). |
 
 :::warning

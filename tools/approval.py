@@ -682,6 +682,37 @@ def _unapproved_findings(command: str, approved) -> tuple[list[str], str] | None
     return [key for key, _ in pending], "; ".join(text for _, text in pending)
 
 
+def _decision_without_approval_surface(command: str, approval_mode: str) -> dict:
+    """Decide a command when no CLI, gateway, or ask surface can prompt.
+
+    Cron, ``hermes chat -q``, and unattended platforms (webhook / api_server) use their own
+    ``approvals.cron_mode`` / ``single_query_mode`` / ``unattended_mode`` keys. A call that is
+    none of those — a direct ``terminal_tool`` with no bound approval callback — has nobody to
+    ask. ``approvals.mode: manual`` then blocks a command the dangerous-pattern list flags,
+    before the process starts. ``smart`` is unchanged here: this path does not call an auxiliary
+    model, and a non-matching command is allowed. ``security.allow_lazy_installs`` is not read.
+    """
+    contexts = _unattended_contexts()
+    for ctx in contexts:
+        denied = _unattended_deny(command, ctx)
+        if denied is not None:
+            return denied
+    if contexts or approval_mode != "manual":
+        return _approved()
+    pending = _unapproved_findings(command, _is_permanently_approved)
+    if pending is None:
+        return _approved()
+    keys, description = pending
+    return _blocked(
+        "BLOCKED: Command flagged as dangerous "
+        f"({description}) and approvals.mode is manual, but this call has no interactive "
+        "CLI, gateway, or ask surface that can collect approval. The command was not run. "
+        "Run it from a Hermes session that prompts, or set the named headless policy for "
+        "that surface (approvals.cron_mode, single_query_mode, or unattended_mode).",
+        pattern_key=keys[0], description=description,
+    )
+
+
 def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow."""
     if ctx.mode() != "deny":
@@ -1206,14 +1237,10 @@ def check_all_command_guards(command: str, env_type: str,
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
-    # Outside CLI/gateway/ask flows we never block on approvals: each
-    # unattended context applies its configured deny/approve mode, else allow.
+    # No prompt surface. Named headless contexts use their own mode; a bare call under
+    # approvals.mode manual does not run a flagged command.
     if not is_cli and not is_gateway and not is_ask:
-        for ctx in _unattended_contexts():
-            result = _unattended_deny(command, ctx)
-            if result is not None:
-                return result
-        return _approved()
+        return _decision_without_approval_surface(command, approval_mode)
 
     session_key = get_current_session_key()
     pending = _unapproved_findings(command, lambda key: is_approved(session_key, key))
