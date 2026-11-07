@@ -331,6 +331,53 @@ The model only ever sees the names and descriptions you configured, never raw pr
 
 **Failures are explicit, never a silent switch.** If the selected backend is missing (plugin not installed or disabled) or reports it cannot run, `delegate_task` returns a tool error naming the backend and the fix, and no subagent starts; it never quietly runs the children on the default route. Within a batch, a task its backend cannot route (an unknown option, a parameter the selected backend does not take, a profile that does not exist, a `service_tier` the route does not offer, an unknown `reasoning_effort`, missing credentials) is refused alone: its result entry has `status: "error"`, the reason, and `route.refused: true`, while the other tasks run. A model route without its own `fallback_providers` uses `delegation.fallback_providers`; `fallback_providers: []` on the route disables fallback for it. A profile route uses that profile's own fallback chain.
 
+**Where `option` goes.** With `model_map`, the selector is the per-task field `option`, inside each object in `tasks`. The same rule applies to `route`, `profile`, and any other parameter the active backend adds. A value placed beside `goal` (or next to `tasks`) is refused before any subagent is built and before any model is contacted. It is not dropped, and the task does not then run on the work model or the parent model.
+
+Omitting `option` is still the plugin's contract, not a core fallback onto the work model: the official plugin uses `delegation.backends.model_map.default` when that name is one of the options, and otherwise the parent's own model. Leave `default` unset when a forgotten selector must not become the worker. Set `fallback_providers: []` on the review option so a review that cannot reach its endpoint does not inherit `delegation.fallback_providers`.
+
+**`completed` is not task success.** `status: "completed"` means the child runtime returned text. When the task declared an `output_schema`, the result also carries `task_success`. That flag is true only when the runtime completed normally and the text validated. A schema miss keeps `status: "completed"`, keeps the raw `summary`, and sets `task_success` to false. The completion text that is stored for the session says `task_success=false` and the model the child actually ran. Hermes does not decide whether prose is on-topic when no schema was declared. Each result's `route.model` (and the entry's `model`) is the model the child was built with.
+
+**Parent context.** `delegate_task` uses the agent bound for the current turn when the caller does not pass `parent_agent`. A call with no turn bound returns `delegate_task requires a parent agent context` and starts nothing. A tool that calls `delegate_task()` during a normal conversation does not need to thread the agent object through itself. A bare thread that dropped the turn's context still fails closed.
+
+### Local worker and reviewer on Ollama
+
+This is configuration for a machine that already serves an OpenAI-compatible endpoint at `http://127.0.0.1:11434/v1` (Ollama). Hermes does not download model weights and does not add an inference API. Install the official `advanced-delegation` plugin (`hermes plugins install advanced-delegation`), then set the active profile's `config.yaml` (do not put this in `.env`):
+
+```yaml
+model:
+  default: gemma4:26b
+  provider: custom
+  base_url: http://127.0.0.1:11434/v1
+delegation:
+  backend: model_map
+  fallback_providers: []
+  backends:
+    model_map:
+      options:
+        - name: work
+          description: Execute the assigned subtask on the worker model.
+          base_url: http://127.0.0.1:11434/v1
+          model: gemma4:12b
+          fallback_providers: []
+        - name: review
+          description: Independently review the worker result. Do not redo the work.
+          base_url: http://127.0.0.1:11434/v1
+          model: qwen3:30b-a3b
+          fallback_providers: []
+```
+
+Leave `default` unset. Start a new session (`/new`, or `/delegation model_map --now` once) so the tool schema and the backend switch together. The main session model stays `gemma4:26b`. A worker task is `tasks: [{goal: "...", option: work}]`. A review task is `tasks: [{goal: "...", option: review}]`. Top-level delegations return a delegation id immediately; the result re-enters the same session when the child finishes and is stored with the session, so `session_search` can find it. Read `route.model` and `task_success` on that result. `status: completed` alone does not mean the review ran on `qwen3:30b-a3b` or that the text matched the task.
+
+Approval-requiring shell commands are refused by the terminal guard before the process starts. A card or a log line is not the gate. Deny leaves the command unrun. A deliberate `once` or `session` approval is what allows that command.
+
+**Rollback.** Set the backend back without deleting the route list:
+
+```bash
+hermes config set delegation.backend default
+```
+
+Then `/new`. To remove the routes, delete the `delegation.backends.model_map` block from `config.yaml` with the usual config writer (`hermes config set` cannot express a whole mapping; edit the file, or restore the copy you kept before the change). The code change that refuses a misplaced selector is reverted by checking out the previous commit; it does not change model names, context sizes, credentials, or network exposure.
+
 **Switching back.** `/delegation default` (from the `advanced-delegation` plugin) saves `delegation.backend` to `config.yaml` and applies from the next session (`/new`): a running chat keeps routing on the backend it started with, because the per-task choices the model sees (option or profile names) are part of the cached tool list and the two switch together. A hand edit of `delegation.backend` behaves the same. `/delegation <backend> --now` also rebuilds the current chat's tools at its next turn, so it routes on and offers the new backend from there, at the cost of one prompt-cache miss (context compression, which rebuilds the tools anyway, picks up the saved backend too). A task that sends a parameter its chat's backend does not take is refused with a message naming the backend, the parameter and the fix (`/delegation <backend> --now`, or `/new`); it never runs on the backend's default route. Without the plugin, `hermes config set delegation.backend default` restores the default.
 
 :::note Profile routes share credentials

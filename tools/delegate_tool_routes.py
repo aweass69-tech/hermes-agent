@@ -78,6 +78,46 @@ def _declared_parameters(provider: DelegationProvider, config: Mapping[str, Any]
     return accepted
 
 
+# Call-level keys delegate_task already accepts. Anything else that names a child
+# route is a per-task field; leaving it beside ``goal`` used to drop it and run
+# the child on the backend's default (often the work model).
+_CALL_LEVEL_KEYS = frozenset({
+    "goal", "context", "tasks", "max_iterations", "role", "background",
+    "output_schema", "images", "action", "subagent_id", "message", "toolsets",
+})
+_ROUTE_SELECTORS = frozenset({"route", "option", "profile"})
+
+
+def misplaced_route_error(args: Mapping[str, Any]) -> Optional[str]:
+    """Refuse a routing selector sitting beside ``goal`` / ``tasks`` before any child is built.
+
+    The active backend's per-task parameters (advanced-delegation's ``option``, a profile name, …)
+    belong inside each task. A top-level value is not applied, so the task would otherwise start
+    on the backend's default route. Returns the tool error, or None when the call is shaped correctly.
+    """
+    if not isinstance(args, Mapping):
+        return None
+    declared: set[str] = set()
+    try:
+        from tools.delegate_tool import _load_config
+        extra, _addendum = schema_extension(_load_config())
+        declared = set(extra)
+    except Exception:
+        logger.debug("could not read delegation task parameters for the route-placement check", exc_info=True)
+    selectors = _ROUTE_SELECTORS | declared
+    misplaced = sorted({name for name in args if name in selectors and name not in _CALL_LEVEL_KEYS
+                        and args.get(name) is not None})
+    if not misplaced:
+        return None
+    listed = ", ".join(repr(name) for name in misplaced)
+    return (
+        f"Routing parameter(s) {listed} were placed beside goal or tasks. Put each one inside the "
+        f"task object in `tasks` (for example tasks: [{{goal: ..., option: review}}]). This call was "
+        f"refused before any subagent was built and before any model was contacted, so it did not "
+        f"fall back to the work model."
+    )
+
+
 def schema_extension(config: Mapping[str, Any]) -> tuple[dict[str, dict[str, Any]], str]:
     """``(extra task properties, description addendum)`` for the active provider (none for the
     default strategy, whose schema is the base one)."""

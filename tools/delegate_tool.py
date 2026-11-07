@@ -561,6 +561,13 @@ def delegate_task(
     (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or a
     dispatch handle when running in the background."""
     if parent_agent is None:
+        # The turn already bound this agent (agent.turn_facade.bind_subagent_parent). A tool
+        # that calls delegate_task() without forwarding parent_agent — the registry does not
+        # inject it into a handler that never declares it — still runs as that turn's child.
+        # No bound turn stays a hard error: nothing is spawned.
+        from agent.subagent_lifecycle import get_active_subagent_parent
+        parent_agent = get_active_subagent_parent()
+    if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
     normalized_action = (action or "").strip().lower()
@@ -767,10 +774,15 @@ def _build_dynamic_schema_overrides() -> dict:
         tasks = overrides_params["properties"]["tasks"]
         tasks["items"] = {**tasks["items"], "properties": {**tasks["items"]["properties"], **extra_params}}
     description = _build_top_level_description(independent_completions=independent_completions)
-    return {
-        "description": f"{description}\n{addendum}" if addendum else description,
-        "parameters": overrides_params,
-    }
+    if addendum:
+        description = f"{description}\n{addendum}"
+    if extra_params:
+        names = ", ".join(f"`{name}`" for name in extra_params)
+        description += (
+            f"\nPut {names} inside each task object. A value beside `goal` or next to `tasks` "
+            "is refused and no subagent starts."
+        )
+    return {"description": description, "parameters": overrides_params}
 
 def _p(type_: str, description: str, **extra) -> dict:
     return {"type": type_, **extra, "description": description}
@@ -906,7 +918,26 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     consolidated result); an orchestrator subagent (depth > 0) is the exception since it needs its workers' results
     within its own turn. The live path is ``run_agent._dispatch_delegate_task``; this mirrors it for the rare case
     the intercept is bypassed. Direct Python callers keep the synchronous default."""
-    return not getattr(parent_agent, "_delegate_depth", 0) > 0
+    depth = getattr(parent_agent, "_delegate_depth", 0) if parent_agent is not None else 0
+    return not depth > 0
+
+
+def _delegate_from_tool_call(args: dict, **kw) -> str:
+    """Registry entry for ``delegate_task``. Rejects a misplaced route before the handler builds a child."""
+    from tools.delegate_tool_routes import misplaced_route_error
+    if not isinstance(args, dict):
+        args = {}
+    misplaced = misplaced_route_error(args)
+    if misplaced:
+        return tool_error(misplaced)
+    parent = kw.get("parent_agent")
+    return delegate_task(
+        goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
+        max_iterations=args.get("max_iterations"), role=args.get("role"),
+        background=_model_background_value(args, parent), output_schema=args.get("output_schema"),
+        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"),
+        message=args.get("message"), parent_agent=parent,
+    )
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
 
@@ -921,13 +952,7 @@ registry.register(
     name="delegate_task",
     toolset="delegation",
     schema=DELEGATE_TASK_SCHEMA,
-    handler=lambda args, **kw: delegate_task(
-        goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
-        max_iterations=args.get("max_iterations"), role=args.get("role"),
-        background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
-        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
-    ),
+    handler=_delegate_from_tool_call,
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,

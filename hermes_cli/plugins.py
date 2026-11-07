@@ -676,10 +676,10 @@ class PluginContext(PluginCapabilityCtxMixin):
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a tool call through the registry with the parent agent (when available)
         resolved automatically; returns the handler's JSON string. ``kwargs`` forward to dispatch."""
+        from agent.subagent_lifecycle import get_active_subagent_parent
         from tools.registry import registry
-        # In gateway mode _cli_ref is None — tools degrade gracefully (no spinner, TERMINAL_CWD).
         if "parent_agent" not in kwargs:
-            agent = getattr(self._manager._cli_ref, "agent", None)
+            agent = getattr(self._manager._cli_ref, "agent", None) or get_active_subagent_parent()
             if agent is not None:
                 kwargs["parent_agent"] = agent
         return registry.dispatch(tool_name, args, scope=self._manager.scope_key, **kwargs)

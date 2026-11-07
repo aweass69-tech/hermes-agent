@@ -707,6 +707,13 @@ def _build_result_entry(
                 + "; `summary` is the child's raw, UNVALIDATED final text — extract what you need from it "
                 "yourself (see schema_errors) rather than re-running the task."
             )
+        # Runtime status stays "completed" when the child returned text (the summary is kept).
+        # task_success is the contract verdict: a schema miss is not a successful task.
+        # Schema-less entries omit the key so their wire shape stays unchanged.
+        entry["task_success"] = bool(
+            status == "completed" and exit_reason == "completed" and schema.valid is True
+            and not entry["truncated"]
+        )
 
     # A steer queued after the final assistant turn had no tool batch to land
     # in; name it so the parent sees it was MISSED rather than silently absorbed.
