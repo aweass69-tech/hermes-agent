@@ -53,6 +53,8 @@ class _Batch:
     # Result entries of tasks their backend refused (no child): joined into a sync result, listed in a background
     # call's dispatch payload. Units carved for async dispatch never carry them.
     refused: list = field(default_factory=list)
+    # Opt-in reviewed-workflow binding. None leaves the combined result byte-identical.
+    review_binding: Optional[dict[str, Any]] = None
 
     def owner_kwargs(self) -> dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -223,6 +225,9 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
         combined["live_transcripts"] = unit_paths
     if batch.group is not None:
         combined["group"] = batch.group
+    if batch.review_binding is not None:
+        from tools.reviewed_workflow import evaluate_review
+        combined["review_workflow"] = evaluate_review(batch.review_binding, results)
     return combined
 
 _SYNC_FALLBACK_NOTES = {

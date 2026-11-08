@@ -11,6 +11,7 @@ the delegation call and the summary result, never the child's intermediate
 tool calls or reasoning.
 """
 
+import json
 import logging
 import time
 import weakref
@@ -554,7 +555,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[dict[str, Any]] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None, review_contract: Optional[dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -608,6 +609,12 @@ def delegate_task(
         )
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+    review_binding = None
+    if not err and review_contract is not None:
+        from tools.reviewed_workflow import start_review_contract
+        review_binding, cached, err = start_review_contract(task_list, review_contract)
+        if cached is not None:
+            return json.dumps(cached, ensure_ascii=False)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
@@ -667,7 +674,7 @@ def delegate_task(
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
-        live_home=_live_home, refused=refused,
+        live_home=_live_home, refused=refused, review_binding=review_binding,
     )
     return _run_batch(batch, background)
 
@@ -834,6 +841,12 @@ DELEGATE_TASK_SCHEMA = {
                             "files do NOT belong here — put paths in 'context' instead.",
                             items={"type": "string"},
                         ),
+                        "review_role": _p(
+                            "string",
+                            "Only used with top-level review_contract. work writes the draft; review is the "
+                            "only verdict source. With model_map, per-task option work or review selects the same role.",
+                            enum=["work", "review"],
+                        ),
                         "group": _p(
                             "string",
                             "Optional result-delivery bucket within this call (only when delegation.independent_completions "
@@ -863,6 +876,14 @@ DELEGATE_TASK_SCHEMA = {
                 "string",
                 "For action='steer': the course correction, appended to "
                 "the child's next tool result mid-run. Be directive and specific.",
+            ),
+            "review_contract": _p(
+                "object",
+                "Opt-in host binding. Omit it and delegation stays free-form. When present, Hermes hashes "
+                "source and artifact itself, installs its own output schema (a schema in the call is not the "
+                "contract), and review_workflow on the result is the only acceptance record. A pass is taken "
+                "only from the review child's validated JSON citing host evidence refs. Text from the parent, "
+                "including a saved PASS file, is ignored. This does not approve or release.",
             ),
         },
         "required": [],
@@ -937,6 +958,7 @@ def _delegate_from_tool_call(args: dict, **kw) -> str:
         background=_model_background_value(args, parent), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"),
         message=args.get("message"), parent_agent=parent,
+        review_contract=args.get("review_contract"),
     )
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}

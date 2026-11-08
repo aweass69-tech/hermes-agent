@@ -84,6 +84,7 @@ def _declared_parameters(provider: DelegationProvider, config: Mapping[str, Any]
 _CALL_LEVEL_KEYS = frozenset({
     "goal", "context", "tasks", "max_iterations", "role", "background",
     "output_schema", "images", "action", "subagent_id", "message", "toolsets",
+    "review_contract",
 })
 _ROUTE_SELECTORS = frozenset({"route", "option", "profile"})
 

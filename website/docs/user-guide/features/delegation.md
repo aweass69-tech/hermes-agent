@@ -337,6 +337,26 @@ Omitting `option` is still the plugin's contract, not a core fallback onto the w
 
 **`completed` is not task success.** `status: "completed"` means the child runtime returned text. When the task declared an `output_schema`, the result also carries `task_success`. That flag is true only when the runtime completed normally and the text validated. A schema miss keeps `status: "completed"`, keeps the raw `summary`, and sets `task_success` to false. The completion text that is stored for the session says `task_success=false` and the model the child actually ran. Hermes does not decide whether prose is on-topic when no schema was declared. Each result's `route.model` (and the entry's `model`) is the model the child was built with.
 
+### Opt-in reviewed workflow
+
+`review_contract` is optional. A `delegate_task` call that omits it keeps the free-form contract above, including a missing `output_schema`. Prompting the model to add a schema does not install that contract.
+
+When the call includes `review_contract`, Hermes hashes `source` and `artifact` (and `requirements` when given) itself. A sha in the call that disagrees with the file refuses the call before a child starts. The call holds one task: `option` or `review_role` is `work` or `review`. Work and review are separate calls so the review hashes the bytes the worker left. Hermes replaces any `output_schema` on that task with its own. The review child is given host evidence refs (`e1`, `e2`, …) for line spans of the artifact and is told to cite those ids. It does not have to reproduce quotes. Hermes resolves each cited ref against the hashed bytes.
+
+`review_workflow` on the tool result is the acceptance record:
+
+| `review_state` | Meaning |
+|---|---|
+| `awaiting_review` | The task was work. A completed worker is not a review. |
+| `needs_revision` | The review child's validated JSON said so, and every evidence ref resolved. |
+| `accepted_review` | The review child's validated JSON said `pass`, the artifact sha matched, and every evidence ref resolved. |
+| `held_failure` | The review output was missing, not schema-valid, cited an unknown ref, or named a different sha. Unvalidated text that looks like a tool call or a PASS is this state. |
+| `recheck_required` | These same artifact bytes already have a `needs_revision` or `held_failure` record. No child is started. |
+
+`review_accepted` is true only for `accepted_review`. A verdict field on `review_contract`, or a JSON file the parent writes, is ignored (`ignored_caller_verdict` when the call carried one). `release.executed` stays false and `release.status` stays `owner_authorization_required`. This contract does not approve, simulate an owner, or release.
+
+The same source and artifact bytes are not reviewed again. Change the artifact, then call review on the new bytes. The public fixture is `tests/fixtures/reviewed_workflow/` (`source.md`, `draft.md`, `draft-corrected.md`, `requirements.txt`). Use absolute paths. One review call on `draft.md` is the first model call; copying `draft-corrected.md` over the artifact is not a model call; one review call on the corrected bytes is the second. A third call on those bytes returns the cached record with `spawned: false`. Read `review_workflow` from the delegation result. Restart the gateway onto this commit and start a new CLI session so the tool schema includes `review_contract`. Leave model names, context sizes, credentials, and `plugins.enabled` as they are.
+
 **Parent context.** `delegate_task` uses the agent bound for the current turn when the caller does not pass `parent_agent`. A call with no turn bound returns `delegate_task requires a parent agent context` and starts nothing. A tool that calls `delegate_task()` during a normal conversation does not need to thread the agent object through itself. A bare thread that dropped the turn's context still fails closed.
 
 ### Local worker and reviewer on Ollama
