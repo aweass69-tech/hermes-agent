@@ -4,14 +4,18 @@ The public 9680-character stand-in is not a private request. The diagnostic
 records counters and the exit reason only.
 """
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from agent.conversation_loop import _close_durable_failed_turn
 from agent.iteration_budget import IterationBudget
 from agent.turn_failure_copy import (
     FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, ZERO_TOOL_INTAKE_NOTICE,
     failed_turn_notice, intake_diagnostic, untyped_failed_turn_display_kind,
 )
+from hermes_state import SessionDB
+from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "reviewed_workflow" / "role-intake.txt"
 
@@ -56,6 +60,62 @@ def test_long_role_intake_with_no_tools_is_not_complete_and_keeps_the_request():
     assert "HARBOR-17" not in blob and request[:40] not in blob
     assert messages[0]["content"] == request
     assert untyped_failed_turn_display_kind("assistant", notice) == "failed_turn"
+
+
+def test_tool_bearing_budget_stop_stamps_the_closing_assistant_row(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    sid = "local-synthetic"
+    db.create_session(sid, source="cli", model="gemma4:26b")
+    child = json.dumps({
+        "results": [{
+            "status": "failed", "exit_reason": "error", "failure_reason": "empty_response",
+            "schema_valid": False, "task_success": False, "model": "gemma4:12b", "api_calls": 5,
+            "error": "PRIVATE child prose that must not be copied",
+            "route": {"label": "work", "model": "gemma4:12b"},
+        }],
+    })
+    summary = "I reached the iteration limit and couldn't generate a summary."
+    db.append_message(sid, "user", content="PUBLIC SYNTHETIC ROLE INTAKE")
+    db.append_message(sid, "tool", content=child, tool_name="delegate_task")
+    db.append_message(sid, "assistant", content=summary)
+    messages = [
+        {"role": "user", "content": "PUBLIC SYNTHETIC ROLE INTAKE"},
+        {"role": "tool", "name": "delegate_task", "content": child},
+        {"role": "assistant", "content": summary},
+    ]
+    agent = SimpleNamespace(_session_db=db, session_id=sid, _persist_disabled=False, iteration_budget=IterationBudget(6))
+    for _ in range(6):
+        agent.iteration_budget.consume()
+    result = {
+        "messages": messages, "api_calls": 6, "completed": False, "failed": False,
+        "turn_exit_reason": "max_iterations_reached(6/6)", "final_response": summary,
+    }
+    result["intake_diagnostic"] = intake_diagnostic(agent, result)
+    _close_durable_failed_turn(agent, result)
+    rows = db.get_messages(sid)
+    assert [row["role"] for row in rows] == ["user", "tool", "assistant"]
+    assert rows[-1]["content"] == summary
+    diagnostic = rows[-1]["display_metadata"]["intake_diagnostic"]
+    assert diagnostic["turn_exit_reason"] == "max_iterations_reached(6/6)"
+    assert diagnostic["api_calls"] == 6 and diagnostic["budget_used"] == 6
+    assert diagnostic["tool_results"] == 1 and diagnostic["completed"] is False
+    assert diagnostic["delegate_outcomes"][0]["children"][0]["failure_reason"] == "empty_response"
+    assert diagnostic["delegate_outcomes"][0]["children"][0]["route_label"] == "work"
+    blob = json.dumps(diagnostic)
+    assert "PRIVATE" not in blob and "PUBLIC SYNTHETIC" not in blob
+
+
+def test_failed_child_is_not_schema_valid():
+    entry = _build_result_entry(
+        SimpleNamespace(),
+        {"failed": True, "error": "provider down", "failure_reason": "server_error",
+         "final_response": '{"status": "draft_written"}', "api_calls": 5, "completed": False},
+        0, 0.1, _SchemaOutcome({"type": "object"}, True, [], 0),
+    )
+    assert entry["status"] == "failed"
+    assert entry["schema_valid"] is False
+    assert entry["task_success"] is False
+    assert entry["failure_reason"] == "server_error"
 
 
 def test_no_call_keeps_the_original_notice_and_a_tool_call_stays_partial():

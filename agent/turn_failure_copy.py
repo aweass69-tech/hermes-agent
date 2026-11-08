@@ -120,6 +120,53 @@ def failed_turn_notice(turn_messages: Any, result: Any = None) -> str:
     return FAILED_TURN_NOTICE
 
 
+def _delegate_outcomes(messages: Any) -> list[dict[str, Any]]:
+    """Codes from delegate_task tool rows. No summaries, paths, or error prose."""
+    import json
+    outcomes: list[dict[str, Any]] = []
+    for row in messages or ():
+        if not isinstance(row, dict) or row.get("role") != "tool":
+            continue
+        if (row.get("name") or row.get("tool_name")) != "delegate_task":
+            continue
+        try:
+            payload = json.loads(row.get("content") or "")
+        except (TypeError, ValueError):
+            outcomes.append({"parseable": False})
+            continue
+        if not isinstance(payload, dict):
+            continue
+        item: dict[str, Any] = {}
+        review = payload.get("review_workflow")
+        if isinstance(review, dict):
+            item["review_state"] = review.get("review_state")
+            item["review_accepted"] = review.get("review_accepted") is True
+        children = []
+        for entry in payload.get("results") or ():
+            if not isinstance(entry, dict):
+                continue
+            slim = {key: entry.get(key) for key in (
+                "status", "exit_reason", "failure_reason", "schema_valid", "task_success", "model", "api_calls",
+            ) if key in entry}
+            if entry.get("error"):
+                slim["has_error"] = True
+            route = entry.get("route")
+            if isinstance(route, dict):
+                slim["route_label"] = route.get("label")
+                slim["route_model"] = route.get("model")
+            children.append(slim)
+        if children:
+            item["children"] = children[:4]
+        elif payload.get("error"):
+            item["status"] = "call_error"
+            item["has_error"] = True
+        if item:
+            outcomes.append(item)
+        if len(outcomes) >= 6:
+            break
+    return outcomes
+
+
 def intake_diagnostic(agent: Any, result: Any) -> dict[str, Any]:
     """Sanitized counters for a turn that did not finish. No message text, paths, or arguments."""
     messages = result.get("messages") if isinstance(result, dict) else None
@@ -138,7 +185,7 @@ def intake_diagnostic(agent: Any, result: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         api_calls = 0
     final = (result or {}).get("final_response") if isinstance(result, dict) else ""
-    return {
+    record = {
         "turn_exit_reason": reason[:120],
         "api_calls": api_calls,
         "budget_used": int(getattr(budget, "used", 0) or 0),
@@ -149,6 +196,9 @@ def intake_diagnostic(agent: Any, result: Any) -> dict[str, Any]:
         "failed": isinstance(result, dict) and result.get("failed") is True,
         "final_response_chars": len(final) if isinstance(final, str) else 0,
     }
+    if outcomes := _delegate_outcomes(messages):
+        record["delegate_outcomes"] = outcomes
+    return record
 
 
 def provider_label_for(provider: Any) -> str:

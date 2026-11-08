@@ -695,7 +695,10 @@ def _build_result_entry(
     # Schema-validation outcome — emitted ONLY when a schema was requested, so
     # legacy (schema-less) payloads keep their exact shape.
     if isinstance(schema.schema, dict):
-        entry["schema_valid"] = bool(schema.valid)
+        # A failed or interrupted run has no accepted artifact. schema_valid true beside
+        # status failed made the parent treat the child text as validated.
+        validated = bool(schema.valid) and status == "completed"
+        entry["schema_valid"] = validated
         if schema.retries:
             entry["schema_retries"] = schema.retries
         if not schema.valid and schema.errors:
@@ -711,7 +714,7 @@ def _build_result_entry(
         # task_success is the contract verdict: a schema miss is not a successful task.
         # Schema-less entries omit the key so their wire shape stays unchanged.
         entry["task_success"] = bool(
-            status == "completed" and exit_reason == "completed" and schema.valid is True
+            status == "completed" and exit_reason == "completed" and validated is True
             and not entry["truncated"]
         )
 

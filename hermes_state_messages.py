@@ -496,6 +496,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             _restore()
             raise
 
+    def merge_latest_message_display_metadata(self, session_id: str, patch: dict) -> bool:
+        """Merge *patch* into the newest active user/assistant/tool row. Content stays unchanged."""
+        from hermes_state_display_meta import merge_latest_message_display_metadata
+        return merge_latest_message_display_metadata(self, session_id, patch)
+
     def set_latest_matching_message_display_kind(self, session_id: str, *, role: str, content: str,
                                                  display_kind: str,
                                                  display_metadata: Optional[dict[str, Any]] = None) -> bool:

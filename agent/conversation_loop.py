@@ -1908,6 +1908,14 @@ def _redact_display_metadata(metadata: dict) -> dict:
     return {k: _redact(v) for k, v in metadata.items()}
 
 
+def _stamp_intake_on_tail(messages: list, diagnostic: dict) -> None:
+    for row in reversed(messages):
+        if isinstance(row, dict) and row.get("role") in {"user", "assistant", "tool"}:
+            meta = row.get("display_metadata")
+            row["display_metadata"] = {**(meta if isinstance(meta, dict) else {}), "intake_diagnostic": diagnostic}
+            return
+
+
 def _close_durable_failed_turn(agent, result: Any) -> None:
     """Append a Hermes-authored assistant boundary when a failed turn left its durable tail open
     (``OPEN_TURN_TAIL_ROLES``: the accepted ``user`` row, or a ``tool`` row when a call ran before
@@ -1922,9 +1930,9 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
 
     Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
     ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
-    #1630 growth loop; their repair is rotation or a retry. Idempotence is keyed on the DURABLE
-    tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail already closed by
-    another writer is a no-op, and the gateway's own closer then no-ops in turn.
+    #1630 growth loop; their repair is rotation or a retry. An open user/tool tail gets a boundary
+    row. An assistant tail (a budget summary already closed the turn) keeps its text and gains
+    ``intake_diagnostic`` on ``display_metadata``, which session export already keeps.
     """
     try:
         if not isinstance(result, dict) or result.get("completed") is True:
@@ -1938,7 +1946,17 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
         if not isinstance(messages, list) or not messages or db is None or not session_id:
             return
-        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) not in OPEN_TURN_TAIL_ROLES:
+        if getattr(agent, "_persist_disabled", False):
+            return
+        role = db.latest_conversation_role(session_id)
+        diagnostic = result.get("intake_diagnostic") if isinstance(result.get("intake_diagnostic"), dict) else None
+        if role == "assistant" and diagnostic is not None:
+            # A budget summary already closed the tail. Stamp the counters on that row;
+            # appending another notice would hide the exit reason from session export.
+            _stamp_intake_on_tail(messages, diagnostic)
+            db.merge_latest_message_display_metadata(session_id, {"intake_diagnostic": diagnostic})
+            return
+        if role not in OPEN_TURN_TAIL_ROLES:
             return
         # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
         # hedge over the whole list rather than under-report a possible side effect.
