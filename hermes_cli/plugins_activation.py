@@ -294,6 +294,29 @@ def dependency_restart_hint(missing: list[str], processes: list[str]) -> str:
     return f"Its Python dependencies ({deps}) are not installed. Run hermes pm repair, then restart:\n{restart}"
 
 
+def report_gateway_plugin_reimport(console, name: str) -> None:
+    """Re-import enabled plugins in the gateway that serves CLI sessions, and print what it registered.
+
+    ``hermes plugins enable`` of a plugin that is already on the allow-list writes nothing, so it
+    used to leave the running gateway on the ``register()`` it imported at boot. Plugin Doctor loads
+    the directory in its own process and does not see that import. Python tool schemas are read from
+    the gateway registry (``/tools`` and ``tool_search``)."""
+    answer = reload_running_gateway()
+    if not (answer and answer.get("reloaded")):
+        console.print(
+            "[dim]No running gateway re-imported plugins. A CLI session uses the gateway process's "
+            "plugin import from when that process started. Run hermes gateway restart, then in a CLI "
+            "session run /tools before any message.[/dim]")
+        return
+    # The reload answer's deferred tool list also includes manifest provides_tools, so it can name
+    # a tool this process never registered. /tools reads get_tool_definitions in the gateway.
+    console.print(
+        "[dim]The running gateway re-imported enabled plugins. "
+        f"Open a CLI session and run /tools before any message. "
+        f"The toolset section for {name} in that list is the catalog tool_search reads. "
+        "Plugin Doctor loads the plugin directory in its own process.[/dim]")
+
+
 def report_activation(console, name: str) -> None:
     """After a CLI install/enable: load *name* where it can go live now (:func:`activate_plugin_now`)
     and print :func:`activation_hint`, or nothing when there is nothing to say."""

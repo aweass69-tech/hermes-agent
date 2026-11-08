@@ -748,6 +748,10 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         report_activation(console, key)
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
+        if source != "bundled":
+            # The allow-list did not change, so the boot import is still what the CLI catalog uses.
+            from hermes_cli.plugins_activation import report_gateway_plugin_reimport
+            report_gateway_plugin_reimport(console, key)
     if source != "bundled":
         _enable_consent(console, key, allow_tool_override)
     if changed:  # after consent: register() sees the grants; same saved-list edit as the Desktop toggle

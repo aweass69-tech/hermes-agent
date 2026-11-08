@@ -210,6 +210,13 @@ hermes plugins enable <name>      # add to allow-list
 hermes plugins disable <name>     # remove from allow-list + add to disabled
 ```
 
+Re-running `hermes plugins enable <name>` when that plugin is already on the allow-list asks the
+running gateway to re-import enabled plugins. The CLI catalog is that gateway process's import, so a
+plugin file change stays invisible there until this re-import or `hermes gateway restart`. Plugin
+Doctor loads the directory in its own process. After the gateway re-imports, open a CLI session and
+run `/tools` before any message: that list is the catalog `tool_search` reads, and it does not call
+the model. Python tool schemas from the re-import are in the live registry for that listing.
+
 If you saved a tool selection (`hermes tools`, so `platform_toolsets` lists toolsets explicitly), disabling a
 plugin also takes its toolset out of those saved lists, and enabling it puts the toolset back. The CLI and the
 Desktop/TUI/dashboard switch behave the same. With no saved selection the lists are left alone: a plugin's
