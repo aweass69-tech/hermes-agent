@@ -13,7 +13,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.turn_failure_copy import (
-    FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, OPEN_TURN_TAIL_ROLES, PARTIAL_FAILED_TURN_NOTICE,
+    FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, PARTIAL_FAILED_TURN_NOTICE,
 )
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
@@ -312,15 +312,10 @@ class GatewayTurnPersistenceMixin:
         turn_messages = _current_turn_messages(
             agent_result.get("messages", []) or [], agent_result.get("history_offset", 0),
         )
-        if any(
-            message.get("role") == "tool"
-            or (message.get("role") == "assistant" and message.get("tool_calls"))
-            for message in turn_messages
-        ):
-            return PARTIAL_FAILED_TURN_NOTICE
-        return FAILED_TURN_NOTICE
+        from agent.turn_failure_copy import failed_turn_notice
+        return failed_turn_notice(turn_messages, agent_result)
 
-    async def _hmwa_close_failed_turn(self, session_id, notice):
+    async def _hmwa_close_failed_turn(self, session_id, notice, agent_result=None):
         """Append the gateway-owned assistant boundary iff the durable tail is open (a user row, or the
         tool row of a call that ran before the failure).
 
@@ -330,9 +325,13 @@ class GatewayTurnPersistenceMixin:
         second assistant row."""
         if await self.async_session_store.transcript_tail_role(session_id) not in OPEN_TURN_TAIL_ROLES:
             return
-        await self.async_session_store.append_to_transcript(session_id, {
+        row = {
             "role": "assistant", "content": notice, "timestamp": time.time(), "display_kind": FAILED_TURN_DISPLAY_KIND,
-        })
+        }
+        diagnostic = agent_result.get("intake_diagnostic") if isinstance(agent_result, dict) else None
+        if isinstance(diagnostic, dict):
+            row["display_metadata"] = {"intake_diagnostic": diagnostic}
+        await self.async_session_store.append_to_transcript(session_id, row)
 
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
@@ -539,7 +538,9 @@ class GatewayTurnPersistenceMixin:
                     await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
                 # Close the failed turn: a user-only tail lets alternation repair merge this request
                 # into an unrelated future message and replay stale side effects (#107070).
-                await self._hmwa_close_failed_turn(sid, self._hmwa_failed_turn_notice(agent_result))
+                await self._hmwa_close_failed_turn(
+                    sid, self._hmwa_failed_turn_notice(agent_result), agent_result,
+                )
             else:
                 # Only the NEW messages: history_offset (what the agent saw), not len(history), which
                 # counts session_meta entries stripped before the agent saw them.

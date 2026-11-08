@@ -56,6 +56,12 @@ def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[
 FAILED_TURN_NOTICE = (
     "Your request was not processed. Send it again if you still want me to carry it out."
 )
+# The model was reached and still produced no tool call. Distinct from "never sent": a
+# no-tool footer is not a completed role intake, and resending the same request is not the next step.
+ZERO_TOOL_INTAKE_NOTICE = (
+    "The model was called but made no tool call, so nothing was delegated or saved. "
+    "This turn is not complete. Send `continue` for another attempt in this session, or /new to start over."
+)
 PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
@@ -79,20 +85,70 @@ def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
     (exact notice text, so a real reply quoting it stays a reply); read-side only."""
     if role == "assistant" and isinstance(content, str) and content.strip() in (
-        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, AUTOMATION_INTERRUPTED_NOTICE,
+        FAILED_TURN_NOTICE, ZERO_TOOL_INTAKE_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
+        AUTOMATION_INTERRUPTED_NOTICE,
     ):
         return FAILED_TURN_DISPLAY_KIND
     return None
 
 
-def failed_turn_notice(turn_messages: Any) -> str:
-    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run."""
+def _turn_ran_a_tool(turn_messages: Any) -> bool:
     for row in turn_messages or ():
         if isinstance(row, dict) and (
             row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
         ):
-            return PARTIAL_FAILED_TURN_NOTICE
+            return True
+    return False
+
+
+def failed_turn_notice(turn_messages: Any, result: Any = None) -> str:
+    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run.
+
+    A turn that already called the model (``api_calls > 0``) and still ran no tool names that
+    fact. ``api_calls`` absent keeps the original never-sent notice.
+    """
+    if _turn_ran_a_tool(turn_messages):
+        return PARTIAL_FAILED_TURN_NOTICE
+    calls = 0
+    if isinstance(result, dict):
+        try:
+            calls = int(result.get("api_calls") or 0)
+        except (TypeError, ValueError):
+            calls = 0
+    if calls > 0:
+        return ZERO_TOOL_INTAKE_NOTICE
     return FAILED_TURN_NOTICE
+
+
+def intake_diagnostic(agent: Any, result: Any) -> dict[str, Any]:
+    """Sanitized counters for a turn that did not finish. No message text, paths, or arguments."""
+    messages = result.get("messages") if isinstance(result, dict) else None
+    tool_turns = tool_results = 0
+    for row in messages or ():
+        if not isinstance(row, dict):
+            continue
+        if row.get("role") == "tool":
+            tool_results += 1
+        elif row.get("role") == "assistant" and row.get("tool_calls"):
+            tool_turns += 1
+    budget = getattr(agent, "iteration_budget", None)
+    reason = str((result or {}).get("turn_exit_reason") or "") if isinstance(result, dict) else ""
+    try:
+        api_calls = int((result or {}).get("api_calls") or 0) if isinstance(result, dict) else 0
+    except (TypeError, ValueError):
+        api_calls = 0
+    final = (result or {}).get("final_response") if isinstance(result, dict) else ""
+    return {
+        "turn_exit_reason": reason[:120],
+        "api_calls": api_calls,
+        "budget_used": int(getattr(budget, "used", 0) or 0),
+        "budget_max": int(getattr(budget, "max_total", 0) or 0),
+        "tool_turns": tool_turns,
+        "tool_results": tool_results,
+        "completed": isinstance(result, dict) and result.get("completed") is True,
+        "failed": isinstance(result, dict) and result.get("failed") is True,
+        "final_response_chars": len(final) if isinstance(final, str) else 0,
+    }
 
 
 def provider_label_for(provider: Any) -> str:

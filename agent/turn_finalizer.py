@@ -838,6 +838,8 @@ def finalize_turn(
         if failed:
             result["error"] = final_response or str(_turn_exit_reason)
         stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
+    from agent.turn_failure_copy import intake_diagnostic
+    result["intake_diagnostic"] = intake_diagnostic(agent, result)
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors

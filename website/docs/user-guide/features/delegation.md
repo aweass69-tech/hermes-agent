@@ -357,6 +357,8 @@ When the call includes `review_contract`, Hermes hashes `source` and `artifact` 
 
 The same source and artifact bytes are not reviewed again. Change the artifact, then call review on the new bytes. The public fixture is `tests/fixtures/reviewed_workflow/` (`source.md`, `draft.md`, `draft-corrected.md`, `requirements.txt`). Use absolute paths. One review call on `draft.md` is the first model call; copying `draft-corrected.md` over the artifact is not a model call; one review call on the corrected bytes is the second. A third call on those bytes returns the cached record with `spawned: false`. Read `review_workflow` from the delegation result. Restart the gateway onto this commit and start a new CLI session so the tool schema includes `review_contract`. Leave model names, context sizes, credentials, and `plugins.enabled` as they are.
 
+A turn that calls the model and runs no tool is not a completed intake. The saved assistant row then says the turn is not complete, and its `display_metadata.intake_diagnostic` carries only counters and `turn_exit_reason` (no request text). `tests/fixtures/reviewed_workflow/role-intake.txt` is a public 9680-character stand-in for that check. Do not resend a private request to reproduce it.
+
 **Parent context.** `delegate_task` uses the agent bound for the current turn when the caller does not pass `parent_agent`. A call with no turn bound returns `delegate_task requires a parent agent context` and starts nothing. A tool that calls `delegate_task()` during a normal conversation does not need to thread the agent object through itself. A bare thread that dropped the turn's context still fails closed.
 
 ### Local worker and reviewer on Ollama
