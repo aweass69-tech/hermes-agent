@@ -95,6 +95,25 @@ def _retry_empty(
     return "continue", None, deterministic
 
 
+def empty_terminal_observation(
+    *, prefill_retries: int, empty_retries: int, reasoning_chars: int, finish_reason: str,
+) -> dict[str, Any]:
+    """Counters for an exhausted empty turn. No reply text.
+
+    Six API calls with ``empty_response_exhausted`` matches one visible-empty reply, two
+    thinking prefills, and three empty retries. That is not a captured body and not the
+    repetition-loop cutter.
+    """
+    return {
+        "thinking_prefill_retries": int(prefill_retries or 0),
+        "empty_content_retries": int(empty_retries or 0),
+        "reasoning_chars": int(reasoning_chars or 0),
+        "reasoning_discarded": bool(reasoning_chars),
+        "visible_chars": 0,
+        "finish_reason": str(finish_reason or "")[:40],
+    }
+
+
 def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, messages: Any) -> str:
     """Retries and fallback exhausted: persist the ``(empty)`` sentinel row and return the
     delivery text. Reasoning is never copied into the delivery text here — the persisted row
@@ -107,6 +126,12 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
         )
     agent._flush_status_buffer()
     reasoning_text = agent._extract_reasoning(assistant_message)
+    agent._empty_terminal_observation = empty_terminal_observation(
+        prefill_retries=getattr(agent, "_thinking_prefill_retries", 0),
+        empty_retries=getattr(agent, "_empty_content_retries", 0),
+        reasoning_chars=len(reasoning_text or ""),
+        finish_reason=finish_reason,
+    )
     agent._drop_trailing_empty_response_scaffolding(messages)
     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
     assistant_msg["content"] = "(empty)"

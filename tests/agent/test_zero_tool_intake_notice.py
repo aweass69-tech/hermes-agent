@@ -118,6 +118,29 @@ def test_failed_child_is_not_schema_valid():
     assert entry["failure_reason"] == "server_error"
 
 
+def test_empty_exhaustion_records_whether_reasoning_was_discarded():
+    from agent.turn_empty_response import empty_terminal_observation
+    discarded = empty_terminal_observation(
+        prefill_retries=2, empty_retries=3, reasoning_chars=400, finish_reason="stop",
+    )
+    assert discarded["reasoning_discarded"] is True
+    assert discarded["thinking_prefill_retries"] == 2 and discarded["empty_content_retries"] == 3
+    assert "400" not in str({k: v for k, v in discarded.items() if k != "reasoning_chars"})
+    blank = empty_terminal_observation(
+        prefill_retries=0, empty_retries=3, reasoning_chars=0, finish_reason="stop",
+    )
+    assert blank["reasoning_discarded"] is False
+    agent = _agent()
+    agent._empty_terminal_observation = discarded
+    diagnostic = intake_diagnostic(agent, {
+        "messages": [], "api_calls": 6, "completed": False, "failed": False,
+        "turn_exit_reason": "empty_response_exhausted", "final_response": "x" * 137,
+    })
+    assert diagnostic["empty_observation"]["reasoning_discarded"] is True
+    assert diagnostic["final_response_chars"] == 137
+    assert diagnostic["failed"] is False
+
+
 def test_no_call_keeps_the_original_notice_and_a_tool_call_stays_partial():
     assert failed_turn_notice([{"role": "user", "content": "hello"}], {"api_calls": 0}) == FAILED_TURN_NOTICE
     partial = [{"role": "assistant", "tool_calls": [{"id": "1"}]}, {"role": "tool", "content": "{}"}]

@@ -198,6 +198,14 @@ def intake_diagnostic(agent: Any, result: Any) -> dict[str, Any]:
     }
     if outcomes := _delegate_outcomes(messages):
         record["delegate_outcomes"] = outcomes
+    observation = getattr(agent, "_empty_terminal_observation", None)
+    if isinstance(observation, dict):
+        record["empty_observation"] = {
+            key: observation.get(key) for key in (
+                "thinking_prefill_retries", "empty_content_retries", "reasoning_chars",
+                "reasoning_discarded", "visible_chars", "finish_reason",
+            )
+        }
     return record
 
 
