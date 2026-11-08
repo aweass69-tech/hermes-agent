@@ -99,12 +99,12 @@ class TestPromptPlumbing:
 
 class TestToolSchemaSurface:
 
-    def test_output_schema_advertised_per_task_only(self):
-        """output_schema is advertised inside tasks[] items (the only spawn
-        shape); the legacy top-level param stays handler-accepted but out
-        of the schema."""
+    def test_call_level_output_schema_is_advertised_and_applied(self):
+        """A one-task call may put output_schema beside tasks. It is a real parameter,
+        applied to that task, not an unadvertised key that becomes free-form."""
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        assert "output_schema" not in props
+        assert props["output_schema"]["type"] == "object"
+        assert "not silently dropped" in props["output_schema"]["description"]
         task_props = props["tasks"]["items"]["properties"]
         assert task_props["output_schema"]["type"] == "object"
 

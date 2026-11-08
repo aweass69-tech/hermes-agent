@@ -212,3 +212,54 @@ def test_delegate_task_cache_does_not_spawn_and_free_form_stays_unscoped(tmp_pat
     )
     assert both is None and "one task" in error
     assert misplaced_route_error({"goal": GOAL, "review_contract": {}, "tasks": _task("review")}) is None
+
+
+def test_call_level_schema_is_applied_to_one_task_and_refused_for_many():
+    from tools.delegate_tool_tasks import _normalize_task_list
+    schema = {"type": "object", "required": ["status"], "properties": {"status": {"enum": ["draft_written"]}}}
+    goal = "Write the synthetic harbor draft to a new file."
+    one, error = _normalize_task_list(None, None, [{"goal": goal, "option": "work"}], schema, "leaf", 4)
+    assert error is None and one[0]["output_schema"] == schema
+    many, error = _normalize_task_list(
+        None, None, [{"goal": goal, "option": "work"}, {"goal": goal + " again", "option": "review"}],
+        schema, "leaf", 4,
+    )
+    assert many is None and "not run as free-form" in error
+
+
+def test_role_intake_refuses_same_file_and_missing_requirements_before_a_child(tmp_path):
+    source, artifact, requirements = _tree(tmp_path, _draft())
+    binding, cached, error = start_review_contract(
+        _task("review"), _spec(artifact, artifact, requirements, workflow="role_intake"),
+    )
+    assert binding is None and cached is None and "distinct artifact" in error
+    missing, cached, error = start_review_contract(
+        _task("review"),
+        {"workflow": "role_intake", "source": {"path": str(source)}, "artifact": {"path": str(artifact)}},
+    )
+    assert missing is None and "requirements" in error
+    plain, cached, error = start_review_contract(_task("review"), _spec(artifact, artifact, requirements))
+    assert error is None and cached is None and plain is not None
+    verdict = evaluate_review(plain, _child(_summary("needs_revision", plain["artifact"]["sha256"])))
+    assert verdict["review_state"] == "needs_revision" and verdict["review_accepted"] is False
+    assert verdict["role_intake_bound"] is False
+
+
+def test_role_intake_review_runs_only_after_a_distinct_artifact_exists(tmp_path):
+    source, _artifact, requirements = _tree(tmp_path, _draft())
+    produced = tmp_path / "harbor-draft.md"
+    work_spec = _spec(source, produced, requirements, workflow="role_intake")
+    binding, cached, error = start_review_contract(_task("work"), work_spec)
+    assert error is None and cached is None and binding["artifact"]["sha256"] is None
+    waiting = evaluate_review(binding, _child(json.dumps({"status": "draft_written"})))
+    assert waiting["review_state"] == "artifact_not_produced"
+    assert waiting["role_intake_bound"] is False
+    produced.write_text(_corrected(), encoding="utf-8")
+    ready = evaluate_review(binding, _child(json.dumps({"status": "draft_written"})))
+    assert ready["review_state"] == "awaiting_review" and ready["role_intake_bound"] is True
+    review, cached, error = start_review_contract(_task("review"), work_spec)
+    assert error is None and cached is None
+    accepted = evaluate_review(review, _child(_summary("needs_revision", review["artifact"]["sha256"])))
+    assert accepted["review_state"] == "needs_revision"
+    assert accepted["review_accepted"] is False and accepted["role_intake_bound"] is True
+    assert accepted["release"]["executed"] is False

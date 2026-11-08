@@ -100,9 +100,30 @@ def _normalize_task_list(
             return None, f"Task {i} must be an object, got {type(task).__name__}."
         if not task.get("goal", "").strip():
             return None, f"Task {i} is missing a 'goal'."
+    schema_error = _apply_call_output_schema(task_list, output_schema)
+    if schema_error:
+        return None, schema_error
     # The single-goal form is exempt from the batch gate (short goals are valid there).
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None
     return (None, batch_error) if batch_error else (task_list, None)
+
+
+def _apply_call_output_schema(task_list: list[dict[str, Any]], output_schema: Any) -> Optional[str]:
+    """A call-level schema on one task is that task's schema. Several tasks that omit it are refused,
+    not run free-form."""
+    if output_schema is None:
+        return None
+    missing = [i for i, task in enumerate(task_list) if task.get("output_schema") is None]
+    if not missing:
+        return None
+    if len(task_list) == 1:
+        task_list[0]["output_schema"] = output_schema
+        return None
+    listed = ", ".join(str(i) for i in missing)
+    return (
+        f"output_schema was set beside tasks, and task(s) {listed} omitted it. "
+        "Put output_schema inside each of those tasks. The call was not run as free-form."
+    )
 
 def _coerce_task_schemas(
     task_list: list[dict[str, Any]], output_schema: Optional[dict[str, Any]]

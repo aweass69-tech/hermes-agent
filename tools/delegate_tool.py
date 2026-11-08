@@ -877,13 +877,20 @@ DELEGATE_TASK_SCHEMA = {
                 "For action='steer': the course correction, appended to "
                 "the child's next tool result mid-run. Be directive and specific.",
             ),
+            "output_schema": _p(
+                "object",
+                "Optional JSON Schema for a one-task call. Hermes applies it to that task. "
+                "A call with several tasks must put output_schema inside each task that needs it; "
+                "a call-level schema is not silently dropped.",
+            ),
             "review_contract": _p(
                 "object",
                 "Opt-in host binding. Omit it and delegation stays free-form. When present, Hermes hashes "
-                "source and artifact itself, installs its own output schema (a schema in the call is not the "
-                "contract), and review_workflow on the result is the only acceptance record. A pass is taken "
-                "only from the review child's validated JSON citing host evidence refs. Text from the parent, "
-                "including a saved PASS file, is ignored. This does not approve or release.",
+                "source and artifact itself, installs its own output schema, and review_workflow is the only "
+                "acceptance record. workflow role_intake also requires requirements and an artifact path whose "
+                "bytes differ from the source before a review child starts. Without workflow, a same-file "
+                "review can still run and is not role-intake binding. A pass comes only from the review child's "
+                "validated JSON. This does not approve or release.",
             ),
         },
         "required": [],

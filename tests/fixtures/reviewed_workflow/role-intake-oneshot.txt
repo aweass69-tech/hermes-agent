@@ -1,0 +1,15 @@
+Public role-intake check. Use the files in this directory. Do not bind source and artifact to the same path.
+
+Work call, one task, option work. Put nothing else beside tasks except review_contract:
+
+review_contract.workflow = role_intake
+review_contract.source.path = the absolute path of source.md
+review_contract.artifact.path = a new absolute path ending in harbor-draft.md
+review_contract.requirements.path = the absolute path of requirements.txt
+
+The worker must create harbor-draft.md. Its bytes must differ from source.md.
+Do not put output_schema beside tasks. The host installs the work schema.
+
+After that file exists, one review call, option review, with the same review_contract.
+A needs_revision result is not acceptance. role_intake_bound must be true.
+Do not release. Do not write an owner approval.

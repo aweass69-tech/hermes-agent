@@ -476,7 +476,7 @@ def recover_from_truncation(
         # whatever the partial or its tool calls look like.
         line, user_response, error = _REPETITION_STREAM_CUT
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
-        return st.end_turn(user_response, error)
+        return st.end_turn(user_response, error, failure=("repetition_loop", True))
     st.window_filled = _prompt_filled_window(agent, response)
     if st.is_stub and getattr(response, "_clean_eof", False):
         _banner = ("Response truncated — server ended the stream without ever sending finish_reason "

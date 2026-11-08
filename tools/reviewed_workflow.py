@@ -81,6 +81,8 @@ def evaluate_review(
 ) -> dict[str, Any]:
     """Host verdict for one finished task. Work never counts as a review."""
     if binding.get("role") != "review":
+        if binding.get("workflow") == "role_intake":
+            return _produced_artifact(binding)
         return _record(binding, review_state="awaiting_review", reason="work_is_not_a_review")
     entry = results[0] if results else {}
     if entry.get("schema_valid") is not True or entry.get("task_success") is not True:
@@ -109,10 +111,13 @@ def _bind(raw: dict[str, Any], role: str) -> tuple[Optional[dict[str, Any]], dic
     ignored = raw.get("verdict", raw.get("review_verdict"))
     if ignored is not None and not isinstance(ignored, str):
         ignored = str(ignored)
+    workflow = raw.get("workflow")
+    if workflow not in (None, "role_intake"):
+        return None, {}, "review_contract.workflow must be role_intake or omitted."
     source, source_text, error = _identity(raw.get("source"), "source")
     if error:
         return None, {}, error
-    artifact, artifact_text, error = _identity(raw.get("artifact"), "artifact")
+    artifact, artifact_text, error = _artifact_identity(raw.get("artifact"), role=role, workflow=workflow)
     if error:
         return None, {}, error
     requirements = None
@@ -121,8 +126,12 @@ def _bind(raw: dict[str, Any], role: str) -> tuple[Optional[dict[str, Any]], dic
         requirements, requirements_text, error = _identity(raw.get("requirements"), "requirements")
         if error:
             return None, {}, error
+    distinct_error = _role_intake_error(workflow, role, source, artifact, requirements)
+    if distinct_error:
+        return None, {}, distinct_error
     binding = {
         "role": role,
+        "workflow": workflow,
         "source": source,
         "artifact": artifact,
         "requirements": requirements,
@@ -136,14 +145,54 @@ def _bind(raw: dict[str, Any], role: str) -> tuple[Optional[dict[str, Any]], dic
     }, None
 
 
-def _identity(spec: Any, label: str) -> tuple[Optional[dict[str, str]], Optional[str], Optional[str]]:
+def _artifact_identity(spec: Any, *, role: str, workflow: Optional[str]):
+    """The work step of role_intake may name an artifact that does not exist yet."""
+    if role == "work" and workflow == "role_intake":
+        path, error = _resolve_path(spec, "artifact")
+        if error:
+            return None, None, error
+        if not path.is_file():
+            return {"path": str(path), "sha256": None}, "", None
+    return _identity(spec, "artifact")
+
+
+def _role_intake_error(workflow, role, source, artifact, requirements) -> Optional[str]:
+    if workflow != "role_intake":
+        return None
+    if requirements is None:
+        return (
+            "role_intake requires review_contract.requirements before work or review. "
+            "No child was started."
+        )
+    if source["path"] == artifact["path"]:
+        return (
+            "role_intake requires a distinct artifact path. Source and artifact are the same file. "
+            "No child was started."
+        )
+    if artifact.get("sha256") and artifact["sha256"] == source["sha256"]:
+        return (
+            "role_intake requires artifact bytes that differ from the source. "
+            "No child was started."
+        )
+    if role == "review" and not artifact.get("sha256"):
+        return "role_intake review requires the produced artifact file to exist. No child was started."
+    return None
+
+
+def _resolve_path(spec: Any, label: str) -> tuple[Optional[Path], Optional[str]]:
     if not isinstance(spec, dict) or not isinstance(spec.get("path"), str) or not spec["path"].strip():
-        return None, None, f"review_contract.{label}.path must be the local file to bind."
+        return None, f"review_contract.{label}.path must be the local file to bind."
     path = Path(spec["path"]).expanduser()
     try:
-        path = path.resolve()
+        return path.resolve(), None
     except OSError as exc:
-        return None, None, f"review_contract.{label} path cannot be resolved: {exc}"
+        return None, f"review_contract.{label} path cannot be resolved: {exc}"
+
+
+def _identity(spec: Any, label: str) -> tuple[Optional[dict[str, str]], Optional[str], Optional[str]]:
+    path, error = _resolve_path(spec, label)
+    if error:
+        return None, None, error
     if not path.is_file():
         return None, None, f"review_contract.{label} is not a file: {path}"
     try:
@@ -216,6 +265,17 @@ def _contract_text(binding: dict[str, Any], text: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _produced_artifact(binding: dict[str, Any]) -> dict[str, Any]:
+    """Role-intake work is not ready for review until the artifact file differs from the source."""
+    current, error = _rehash(binding["artifact"]["path"])
+    if error or not current:
+        return _record(binding, review_state="artifact_not_produced", reason="artifact_missing")
+    if current == binding["source"]["sha256"]:
+        return _record(binding, review_state="artifact_not_produced", reason="artifact_matches_source")
+    binding["artifact"] = {**binding["artifact"], "sha256": current}
+    return _record(binding, review_state="awaiting_review", reason="work_is_not_a_review")
+
+
 def _judge(binding: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:
     if parsed.get("artifact_sha256") != binding["artifact"]["sha256"]:
         return _record(binding, review_state="held_failure", reason="artifact_sha_mismatch")
@@ -282,6 +342,13 @@ def _record(
     }
     if binding.get("ignored_caller_verdict") is not None:
         record["ignored_caller_verdict"] = binding["ignored_caller_verdict"]
+    source, artifact = binding["source"], binding["artifact"]
+    record["role_intake_bound"] = bool(
+        binding.get("workflow") == "role_intake" and binding.get("requirements")
+        and source.get("path") != artifact.get("path")
+        and source.get("sha256") and artifact.get("sha256")
+        and source["sha256"] != artifact["sha256"]
+    )
     return record
 
 
@@ -292,7 +359,9 @@ def _cache_path(binding: dict[str, Any]) -> Path:
 
 
 def _store(record: dict[str, Any]) -> None:
-    if record["review_state"] == "awaiting_review":
+    if record["review_state"] in {"awaiting_review", "artifact_not_produced"}:
+        return
+    if not (record.get("provenance") or {}).get("artifact", {}).get("sha256"):
         return
     path = _cache_path({"source": record["provenance"]["source"], "artifact": record["provenance"]["artifact"]})
     try:
